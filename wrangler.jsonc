@@ -2,5 +2,12 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "runner-os",
   "compatibility_date": "2024-01-01",
-  "pages_build_output_dir": "./dist"
+  "pages_build_output_dir": "./dist",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "runner-os-production",
+      "database_id": "8161e771-bc17-4e62-b1e1-dc94e3c689d1"
+    }
+  ]
 }

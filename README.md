@@ -1,64 +1,33 @@
 # Runner OS
 
-Runner OS is the provider-independent execution layer for SparkMind's AI Business Operator direction. It receives an already-selected task, executes controlled steps through adapters, verifies actual outcomes, preserves evidence and audit records, and returns a structured result.
+Runner OS is a provider-independent execution runtime that converts structured tasks into policy-checked, verified, evidence-backed results.
 
 ## Current status
 
-**Implemented: Phase 0 → Phase 1 MVP vertical slice.**
+**Phase 2 — Durable Persistence is complete.** The execution flow remains:
 
-The repository was documentation-only. The smallest production-sensible stack selected is:
+`Task → Normalize → Validate → Plan → Policy Check → Execute → Observe → Verify → Persist Evidence → Audit → Deliver Result`
 
-- **TypeScript** for explicit contracts and strict domain modeling.
-- **Hono** for a minimal HTTP boundary.
-- **Cloudflare Pages/Workers** for an edge-deployable runtime using Web APIs only.
-- **Vitest** for unit, adapter-contract, integration, API, and end-to-end tests.
-- **In-memory repositories** behind interfaces, as explicitly allowed for Phase 1.
-
-No UI, real provider integration, queue, scheduler, or unrelated operator feature was added.
-
-## Proven execution flow
-
-```text
-Task
-→ Normalize
-→ Validate
-→ Plan
-→ Policy Check
-→ Execute
-→ Observe
-→ Verify
-→ Persist Evidence
-→ Audit
-→ Deliver Result
-```
+The core engine remains provider-agnostic. `RunnerStore` accepts synchronous or asynchronous implementations; Phase 1 tests use `InMemoryRunnerStore`, while Cloudflare requests with a `DB` binding use `D1RunnerStore`.
 
 ## Completed features
 
-- Task, run, step, evidence, audit, policy, adapter, error, verification, and delivery contracts.
-- Enforced run and step state machines.
-- Deterministic sequential planner and execution engine.
-- Provider-independent adapter registry and tool contract.
-- Deterministic `mock.tool` adapter with read/write behavior.
-- Risk levels 0–3 with `ALLOW`, `REQUIRE_APPROVAL`, and `DENY` decisions.
-- Task-level duplicate suppression and stable step idempotency keys.
-- Bounded retry for retryable, idempotency-protected operations.
-- Verification-first handling for unknown mutation outcomes.
-- Execution and verification evidence with integrity hashes.
-- Append-oriented, redacted audit events.
-- Structured delivery results with outputs, evidence, warnings, errors, and next action.
-- Secret redaction at adapter, evidence, audit, and delivery boundaries.
-- Automated coverage of all 15 mandatory scenarios in `docs/08_TESTING_AND_ACCEPTANCE.md`.
+- Strict task/run/step/evidence/audit contracts and state machines.
+- Deterministic sequential planner, policy gate, bounded retries, cancellation, unknown-outcome verification, and mock adapter.
+- Durable D1 storage for tasks, runs, steps, evidence, audit events, and idempotency claims/results.
+- Database-backed idempotency claims using a primary-key uniqueness constraint.
+- Append-only evidence and audit inserts with redaction and preserved integrity hashes.
+- Restart/store re-instantiation, schema reproducibility, serialization, terminal-state, failure, and concurrency tests.
+- All Phase 1 mandatory scenarios remain covered.
 
 ## API entry points
 
 | Method | URI | Purpose |
 |---|---|---|
-| `GET` | `/` | Service metadata and implemented flow |
+| `GET` | `/` | Service metadata and execution flow |
 | `GET` | `/health` | Health check |
-| `POST` | `/api/runs` | Normalize, validate, and execute one task |
-| `GET` | `/api/runs/:runId` | Inspect an in-memory run, steps, evidence, and audit trace |
-
-### Execute the sample task
+| `POST` | `/api/runs` | Execute one structured task |
+| `GET` | `/api/runs/:runId` | Retrieve durable run, steps, evidence, and audit |
 
 ```bash
 curl -X POST http://localhost:3000/api/runs \
@@ -66,16 +35,33 @@ curl -X POST http://localhost:3000/api/runs \
   --data @examples/read-only-task.json
 ```
 
-## Development
+## D1 architecture
+
+Migration `migrations/0001_runner_store.sql` creates only the current domain tables:
+
+- `tasks`
+- `runs`
+- `steps`
+- `evidence`
+- `audit_events`
+- `idempotency_claims`
+
+Foreign keys protect run-owned records, indexes cover run/status/order lookups, and SQL checks constrain statuses and risk levels. JSON fields use canonical key ordering for deterministic serialization. Terminal run/step transitions are rejected by both the state machine and persistence update guards.
+
+The `DB` binding in `wrangler.jsonc` targets `runner-os-production`. Replace the placeholder database ID with the ID returned when creating the production database.
+
+## Setup and migrations
 
 ```bash
 npm install
+npm run db:migrate:local
 npm run typecheck
 npm test
 npm run build
+npm run check
 ```
 
-Sandbox preview:
+Local preview:
 
 ```bash
 npm run build
@@ -83,59 +69,46 @@ pm2 start ecosystem.config.cjs
 curl http://localhost:3000/health
 ```
 
-Full quality gate:
+Production D1 setup (BYOK Cloudflare account):
 
 ```bash
-npm run check
+npx wrangler d1 create runner-os-production
+# Put the returned database_id in wrangler.jsonc
+npm run db:migrate:prod
+npm run deploy
 ```
 
-## Data architecture
+Tests use a local SQLite-backed D1 contract harness; they require no Cloudflare account or production credentials. Wrangler local migration additionally verifies migration compatibility against local D1.
 
-### Models
+## Durability and concurrency guarantees
 
-- `Task 1 → N Run`
-- `Run 1 → N Step`
-- `Step 1 → N Evidence`
-- `Run 1 → N AuditEvent`
+- Completed and failed runs, steps, execution/verification evidence, audits, and idempotency results survive Worker/store re-instantiation.
+- `idempotency_claims.idempotency_key` is the database primary key. `INSERT OR IGNORE` makes claim ownership atomic within one D1 database: only one competing run can claim a stable key.
+- A duplicate completed request receives the original persisted result. A duplicate arriving while the owner is still running is suppressed with an in-progress warning and performs no adapter side effect.
+- Guarantees are scoped to one configured D1 database. They do not coordinate separate databases/accounts or a provider action executed outside Runner OS.
+- D1 provides transactional semantics per statement; this phase does not implement queues, leases, abandoned-claim recovery, or parallel execution.
+- Evidence/audit APIs are append-oriented. Duplicate primary keys fail rather than overwrite records.
+- Sensitive key names are redacted before evidence, audit, task input, step input/output, and idempotency result JSON are persisted.
 
-### Storage
+## Data model
 
-Phase 1 uses `InMemoryRunnerStore` through the replaceable `RunnerStore` interface. Tasks, runs, steps, evidence, audits, and idempotency results are process-local and are not durable across restarts or isolate eviction.
-
-Evidence and audit collections are append-oriented through their public repository methods. Returned values are structured clones so callers cannot mutate stored records by reference.
-
-## Security and policy behavior
-
-- Level 0 and level 1 operations execute automatically unless explicitly denied.
-- Level 2 and level 3 operations require a matching valid approval.
-- Rejected or disallowed actions are blocked before adapter execution.
-- Unknown side-effect outcomes are verified and are never blindly retried.
-- Tool output remains untrusted data and cannot redefine policy.
-- Sensitive keys such as tokens, passwords, API keys, and credentials are redacted.
-- No secrets are stored in source control.
+`Task 1 → N Run`, `Run 1 → N Step`, `Step 1 → N Evidence`, and `Run 1 → N AuditEvent`. Validation failures retain a run with a nullable database task reference represented as `unresolved` in the domain model.
 
 ## Deployment
 
-- **Platform:** Cloudflare Pages
-- **Configuration:** `wrangler.jsonc`
+- **Platform:** Cloudflare Pages + D1
 - **Production branch:** `main`
-- **Status:** Active — verified 2026-09-10
-- **Production URL:** https://runner-os.pages.dev
-- **Deployment URL:** https://1970f857.runner-os.pages.dev
+- **Binding:** `DB`
+- **Secrets:** none required for the mock adapter; never commit `.dev.vars`, `.env`, tokens, or credentials.
 
-The in-memory runtime is suitable for proving Phase 0 → Phase 1 behavior but not for production durability. Cloudflare D1 is the recommended next persistence implementation.
+## Known limitations / not implemented
 
-## Not yet implemented
-
-- Durable D1 persistence and restart recovery.
-- Cross-isolate/concurrent idempotency claims.
-- Resume flow for runs waiting on approval.
-- Durable approval records.
-- Unknown-outcome recovery beyond the current verification attempt.
-- Real external adapter.
-- Authentication, tenant isolation, rate limiting, metrics, and operations runbooks.
-- Queue, scheduling, webhooks, and parallel execution.
+- No abandoned idempotency-claim lease or resume mechanism.
+- No durable approval workflow beyond approval data included in the submitted task.
+- No cross-database idempotency coordination.
+- No real external adapters, authentication, tenancy, queues, scheduling, webhooks, parallel execution, UI, or operator integration.
+- Unknown mutation outcomes are verified once and not autonomously recovered later.
 
 ## Exact next recommended phase
 
-**Phase 2 — Persistence:** implement a Cloudflare D1-backed `RunnerStore` for tasks, runs, steps, evidence, audit events, and idempotency records; add migrations and restart-recovery tests. Do not add a real connector or operator UI before this persistence exit gate passes.
+**Phase 3 — Safety & Recovery hardening:** add durable approval/resume records, idempotency claim leases and abandoned-run recovery, and restart-aware cancellation/recovery semantics. Do not add real providers or an operator UI until that reliability gate passes.

@@ -9,9 +9,11 @@
     "dev:sandbox": "wrangler pages dev dist --ip 0.0.0.0 --port 3000",
     "test": "vitest run",
     "test:watch": "vitest",
+    "db:migrate:local": "wrangler d1 migrations apply runner-os-production --local",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test && npm run build",
-    "deploy": "npm run build && wrangler pages deploy dist"
+    "deploy": "npm run build && wrangler pages deploy dist",
+    "db:migrate:prod": "wrangler d1 migrations apply runner-os-production --remote"
   },
   "dependencies": {
     "hono": "^4.9.8"
@@ -19,6 +21,8 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260910.1",
     "@hono/vite-cloudflare-pages": "^0.4.2",
+    "@types/better-sqlite3": "^9.6.0",
+    "better-sqlite3": "^13.0.3",
     "typescript": "^5.9.2",
     "vite": "^5.4.20",
     "vitest": "^2.1.9",

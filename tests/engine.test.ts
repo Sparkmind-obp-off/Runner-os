@@ -12,9 +12,9 @@ describe('Runner OS mandatory execution scenarios', () => {
     expect(result.outputs).toHaveLength(1)
     expect(result.evidence.map((item) => item.type)).toEqual(['execution', 'verification'])
     expect(result.evidence.every((item) => item.integrity_hash.startsWith('fnv1a:'))).toBe(true)
-    expect(store.getSteps(result.run_id)[0]).toMatchObject({ status: 'succeeded', verification_status: 'PASS', attempt: 1 })
+    expect((await store.getSteps(result.run_id))[0]).toMatchObject({ status: 'succeeded', verification_status: 'PASS', attempt: 1 })
 
-    const events = store.getAudit(result.run_id).map((event) => event.event_type)
+    const events = (await store.getAudit(result.run_id)).map((event) => event.event_type)
     expect(events).toEqual(expect.arrayContaining([
       'run.created', 'task.validated', 'plan.created', 'policy.evaluated',
       'step.execution_started', 'step.observed', 'step.verified', 'evidence.persisted', 'run.delivered',
@@ -40,7 +40,7 @@ describe('Runner OS mandatory execution scenarios', () => {
     const result = await engine.execute(input)
     expect(result).toMatchObject({ status: 'blocked', errors: [{ code: 'POLICY_DENIED' }] })
     expect(mock.getExecutionCount()).toBe(0)
-    expect(store.getSteps(result.run_id)[0].status).toBe('blocked')
+    expect((await store.getSteps(result.run_id))[0].status).toBe('blocked')
   })
 
   it('pauses a consequential action when approval is absent', async () => {
@@ -79,8 +79,8 @@ describe('Runner OS mandatory execution scenarios', () => {
     const result = await engine.execute(task())
     expect(result.status).toBe('completed')
     expect(mock.getExecutionCount()).toBe(2)
-    expect(store.getSteps(result.run_id)[0].attempt).toBe(2)
-    expect(store.getAudit(result.run_id).filter((event) => event.event_type === 'step.retry_scheduled')).toHaveLength(1)
+    expect((await store.getSteps(result.run_id))[0].attempt).toBe(2)
+    expect((await store.getAudit(result.run_id)).filter((event) => event.event_type === 'step.retry_scheduled')).toHaveLength(1)
   })
 
   it('stops when the retry budget is exhausted', async () => {
@@ -95,7 +95,7 @@ describe('Runner OS mandatory execution scenarios', () => {
     const result = await engine.execute(task({ risk_level: 1 }))
     expect(result).toMatchObject({ status: 'failed', errors: [{ code: 'UNKNOWN_OUTCOME', retryability: 'unknown' }] })
     expect(mock.getExecutionCount()).toBe(1)
-    expect(store.getEvidence(result.run_id).some((item) => item.type === 'verification')).toBe(true)
+    expect((await store.getEvidence(result.run_id)).some((item) => item.type === 'verification')).toBe(true)
   })
 
   it('fails the run when independent verification fails', async () => {
@@ -145,7 +145,7 @@ describe('Runner OS mandatory execution scenarios', () => {
     const result = await engine.execute(input)
     expect(result.status).toBe('completed')
     expect(result.outputs[0].output.untrusted_text).toBe(toolInput.untrusted_text)
-    expect(store.getAudit(result.run_id).filter((event) => event.event_type === 'policy.evaluated')).toHaveLength(1)
+    expect((await store.getAudit(result.run_id)).filter((event) => event.event_type === 'policy.evaluated')).toHaveLength(1)
   })
 
   it('redacts secrets from evidence and audit metadata', async () => {
@@ -155,6 +155,6 @@ describe('Runner OS mandatory execution scenarios', () => {
     toolInput.api_key = 'must-not-leak'
     const result = await engine.execute(input)
     expect(JSON.stringify(result)).not.toContain('must-not-leak')
-    expect(JSON.stringify(store.getAudit(result.run_id))).not.toContain('must-not-leak')
+    expect(JSON.stringify(await store.getAudit(result.run_id))).not.toContain('must-not-leak')
   })
 })

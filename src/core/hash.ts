@@ -8,7 +8,7 @@ export function integrityHash(value: unknown): string {
   return `fnv1a:${(hash >>> 0).toString(16).padStart(8, '0')}`
 }
 
-function stableStringify(value: unknown): string {
+export function stableStringify(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
   if (value && typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>)

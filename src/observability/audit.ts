@@ -9,7 +9,7 @@ export class AuditRecorder {
     private readonly createId: () => string,
   ) {}
 
-  record(runId: string, eventType: string, actor: string, metadata: Record<string, unknown> = {}): AuditEvent {
+  async record(runId: string, eventType: string, actor: string, metadata: Record<string, unknown> = {}): Promise<AuditEvent> {
     const event: AuditEvent = {
       event_id: this.createId(),
       run_id: runId,
@@ -18,7 +18,7 @@ export class AuditRecorder {
       actor,
       metadata: redact(metadata),
     }
-    this.store.appendAudit(event)
+    await this.store.appendAudit(event)
     return event
   }
 }

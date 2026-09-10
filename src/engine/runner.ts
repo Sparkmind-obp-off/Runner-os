@@ -21,7 +21,7 @@ export interface RunnerEngineOptions {
   policy?: PolicyEvaluator
   retryPolicy?: Partial<RetryPolicy>
   sleep?: (milliseconds: number) => Promise<void>
-  onRunCreated?: (runId: string, engine: RunnerEngine) => void
+  onRunCreated?: (runId: string, engine: RunnerEngine) => void | Promise<void>
 }
 
 export class RunnerEngine {
@@ -50,11 +50,11 @@ export class RunnerEngine {
     this.audit = new AuditRecorder(store, this.now, this.createId)
   }
 
-  cancel(runId: string, actor = 'system'): boolean {
-    const run = this.store.getRun(runId)
+  async cancel(runId: string, actor = 'system'): Promise<boolean> {
+    const run = await this.store.getRun(runId)
     if (!run || ['completed', 'failed', 'cancelled', 'blocked', 'expired'].includes(run.status)) return false
     this.cancelledRuns.add(runId)
-    this.audit.record(runId, 'run.cancellation_requested', actor)
+    await this.audit.record(runId, 'run.cancellation_requested', actor)
     return true
   }
 
@@ -67,43 +67,43 @@ export class RunnerEngine {
       started_at: createdAt,
       attempt: 1,
     }
-    this.store.saveRun(run)
-    this.audit.record(run.run_id, 'run.created', 'runner-os')
-    this.options.onRunCreated?.(run.run_id, this)
+    await this.store.saveRun(run)
+    await this.audit.record(run.run_id, 'run.created', 'runner-os')
+    await this.options.onRunCreated?.(run.run_id, this)
 
-    this.setRunStatus(run, 'validating')
+    await await this.setRunStatus(run, 'validating')
     let task: Task
     try {
       task = normalizeTask(rawTask, createdAt, this.createId)
-      run.task_id = task.task_id
-      this.store.saveRun(run)
       validateTask(task)
     } catch (error) {
       const runnerError = validationError(error)
       return this.finishFailure(run, [], [runnerError], '')
     }
 
-    const existing = this.store.getIdempotentResult(task.idempotency_key)
-    if (existing) {
-      this.audit.record(run.run_id, 'run.duplicate_suppressed', task.requested_by, { idempotency_key: task.idempotency_key })
-      this.setRunStatus(run, 'failed')
+    const claim = await this.store.claimIdempotency(task.idempotency_key, run.run_id, createdAt)
+    if (!claim.claimed) {
+      await this.audit.record(run.run_id, 'run.duplicate_suppressed', task.requested_by, { idempotency_key: task.idempotency_key })
+      await await this.setRunStatus(run, 'failed')
       run.finished_at = this.now()
       run.error = { code: 'DUPLICATE_IDEMPOTENCY_KEY', message: 'Duplicate task execution was suppressed.', retryability: 'non_retryable' }
-      this.store.saveRun(run)
-      return existing
+      await this.store.saveRun(run)
+      return claim.result ?? createDeliveryResult(run, [], [], [run.error], ['The original request is still in progress.'])
     }
 
-    this.store.saveTask(task)
-    this.audit.record(run.run_id, 'task.validated', task.requested_by, { task_id: task.task_id, task_type: task.type })
+    await this.store.saveTask(task)
+    run.task_id = task.task_id
+    await this.store.saveRun(run)
+    await this.audit.record(run.run_id, 'task.validated', task.requested_by, { task_id: task.task_id, task_type: task.type })
     if (this.isCancelled(run.run_id)) return this.finishCancelled(run, [], task.idempotency_key)
 
-    this.setRunStatus(run, 'planning')
+    await this.setRunStatus(run, 'planning')
     let steps: Step[]
     try {
       steps = this.planner.plan(task, run.run_id)
       if (!steps.length) throw new Error('Planner returned no executable steps.')
-      steps.forEach((step) => this.store.saveStep(step))
-      this.audit.record(run.run_id, 'plan.created', 'runner-os', { step_count: steps.length })
+      await Promise.all(steps.map((step) => this.store.saveStep(step)))
+      await this.audit.record(run.run_id, 'plan.created', 'runner-os', { step_count: steps.length })
     } catch (error) {
       return this.finishFailure(run, [], [{ code: 'PLANNING_ERROR', message: safeMessage(error), retryability: 'non_retryable' }], task.idempotency_key)
     }
@@ -112,27 +112,27 @@ export class RunnerEngine {
       const decision = this.policy.evaluate(step, task.policy_context)
       step.policy_decision = decision
       run.policy_decision = decision
-      this.store.saveStep(step)
-      this.store.saveRun(run)
-      this.audit.record(run.run_id, 'policy.evaluated', 'runner-os', { step_id: step.step_id, decision })
+      await this.store.saveStep(step)
+      await this.store.saveRun(run)
+      await this.audit.record(run.run_id, 'policy.evaluated', 'runner-os', { step_id: step.step_id, decision })
       if (decision.decision === 'DENY') {
-        this.setStepStatus(step, 'blocked')
-        this.setRunStatus(run, 'blocked')
+        await this.setStepStatus(step, 'blocked')
+        await this.setRunStatus(run, 'blocked')
         const error: RunnerError = { code: 'POLICY_DENIED', message: decision.reason, retryability: 'non_retryable', step_id: step.step_id }
         return this.finish(run, steps, [error], task.idempotency_key)
       }
       if (decision.decision === 'REQUIRE_APPROVAL') {
-        this.setRunStatus(run, 'awaiting_approval')
-        const result = createDeliveryResult(run, this.currentSteps(run.run_id), this.store.getEvidence(run.run_id), [], [decision.reason])
+        await this.setRunStatus(run, 'awaiting_approval')
+        const result = createDeliveryResult(run, await this.currentSteps(run.run_id), await this.store.getEvidence(run.run_id), [], [decision.reason])
         run.result = result
-        this.store.saveRun(run)
-        this.audit.record(run.run_id, 'run.awaiting_approval', 'runner-os', { step_id: step.step_id })
+        await this.store.saveRun(run)
+        await this.audit.record(run.run_id, 'run.awaiting_approval', 'runner-os', { step_id: step.step_id })
         return result
       }
     }
 
     if (this.isCancelled(run.run_id)) return this.finishCancelled(run, steps, task.idempotency_key)
-    this.setRunStatus(run, 'executing')
+    await this.setRunStatus(run, 'executing')
 
     for (const step of steps) {
       const failure = await this.executeStep(task, run, step)
@@ -142,17 +142,17 @@ export class RunnerEngine {
       }
     }
 
-    this.setRunStatus(run, 'verifying')
-    this.audit.record(run.run_id, 'run.verification_completed', 'runner-os', { verified_steps: steps.length })
-    this.setRunStatus(run, 'completed')
+    await this.setRunStatus(run, 'verifying')
+    await this.audit.record(run.run_id, 'run.verification_completed', 'runner-os', { verified_steps: steps.length })
+    await this.setRunStatus(run, 'completed')
     return this.finish(run, steps, [], task.idempotency_key)
   }
 
   private async executeStep(task: Task, run: Run, step: Step): Promise<RunnerError | undefined> {
-    this.setStepStatus(step, 'validating')
+    await this.setStepStatus(step, 'validating')
     const adapter = this.adapters.resolve(step.tool)
     if (!adapter) {
-      this.setStepStatus(step, 'failed')
+      await this.setStepStatus(step, 'failed')
       return { code: 'ADAPTER_UNAVAILABLE', message: `Adapter not registered: ${step.tool}`, retryability: 'non_retryable', step_id: step.step_id }
     }
 
@@ -167,27 +167,27 @@ export class RunnerEngine {
     try {
       await adapter.validate(redact(step.input), contextFor(0))
     } catch (error) {
-      this.setStepStatus(step, 'failed')
+      await this.setStepStatus(step, 'failed')
       return { code: 'VALIDATION_ERROR', message: safeMessage(error), retryability: 'non_retryable', step_id: step.step_id }
     }
 
-    this.setStepStatus(step, 'executing')
+    await this.setStepStatus(step, 'executing')
     step.started_at = this.now()
     const startedMs = this.nowMs()
     let execution: AdapterExecutionResult | undefined
 
     for (let attempt = 1; attempt <= this.retryPolicy.maxAttempts; attempt += 1) {
       step.attempt = attempt
-      this.store.saveStep(step)
+      await this.store.saveStep(step)
       if (this.isCancelled(run.run_id)) {
-        this.setStepStatus(step, 'skipped')
+        await this.setStepStatus(step, 'skipped')
         return { code: 'CANCELLED', message: 'Execution cancelled before the next side effect.', retryability: 'non_retryable', step_id: step.step_id, attempt }
       }
 
       const retryDecision = this.policy.evaluate(step, task.policy_context)
-      this.audit.record(run.run_id, 'step.execution_started', 'runner-os', { step_id: step.step_id, attempt, policy_decision: retryDecision.decision })
+      await this.audit.record(run.run_id, 'step.execution_started', 'runner-os', { step_id: step.step_id, attempt, policy_decision: retryDecision.decision })
       if (retryDecision.decision !== 'ALLOW') {
-        this.setStepStatus(step, 'failed')
+        await this.setStepStatus(step, 'failed')
         return { code: 'POLICY_CHANGED', message: 'Policy no longer allows execution.', retryability: 'non_retryable', step_id: step.step_id, attempt }
       }
 
@@ -203,47 +203,47 @@ export class RunnerEngine {
         }
       }
 
-      this.persistExecutionEvidence(run, step, execution)
-      this.audit.record(run.run_id, 'step.observed', adapter.name, { step_id: step.step_id, attempt, result: execution })
+      await this.persistExecutionEvidence(run, step, execution)
+      await this.audit.record(run.run_id, 'step.observed', adapter.name, { step_id: step.step_id, attempt, result: execution })
 
       if (execution.success) break
       if (execution.error?.code === 'CANCELLED' || this.isCancelled(run.run_id)) {
-        this.setStepStatus(step, 'skipped')
+        await this.setStepStatus(step, 'skipped')
         return { code: 'CANCELLED', message: 'Execution cancelled while the adapter was running.', retryability: 'non_retryable', step_id: step.step_id, attempt }
       }
       if (execution.retryability === 'unknown') {
         return this.verifyUnknownOutcome(adapter, run, step, execution, contextFor(attempt))
       }
       if (!shouldRetry(execution, attempt, this.retryPolicy, adapter.capabilities().idempotency_supported)) {
-        this.setStepStatus(step, 'failed')
+        await this.setStepStatus(step, 'failed')
         if (execution.retryability === 'retryable' && attempt >= this.retryPolicy.maxAttempts) {
           return { code: 'RETRY_BUDGET_EXHAUSTED', message: 'Retry budget exhausted.', retryability: 'non_retryable', step_id: step.step_id, attempt }
         }
         return { ...(execution.error ?? { code: 'TOOL_FAILURE', message: 'Tool execution failed.', retryability: execution.retryability }), step_id: step.step_id, attempt }
       }
 
-      this.setStepStatus(step, 'retryable_failure')
-      this.audit.record(run.run_id, 'step.retry_scheduled', 'runner-os', { step_id: step.step_id, attempt, next_attempt: attempt + 1 })
+      await this.setStepStatus(step, 'retryable_failure')
+      await this.audit.record(run.run_id, 'step.retry_scheduled', 'runner-os', { step_id: step.step_id, attempt, next_attempt: attempt + 1 })
       await this.sleep(retryDelay(attempt, this.retryPolicy))
-      this.setStepStatus(step, 'executing')
+      await this.setStepStatus(step, 'executing')
     }
 
     if (!execution?.success) {
-      this.setStepStatus(step, 'failed')
+      await this.setStepStatus(step, 'failed')
       return { code: 'RETRY_BUDGET_EXHAUSTED', message: 'Retry budget exhausted.', retryability: 'non_retryable', step_id: step.step_id, attempt: step.attempt }
     }
 
     step.output = redact(execution.output ?? {})
     step.finished_at = this.now()
     step.duration_ms = Math.max(0, this.nowMs() - startedMs)
-    this.setStepStatus(step, 'verifying')
+    await this.setStepStatus(step, 'verifying')
     const verification = await adapter.verify(execution, step.expected_outcome, contextFor(step.attempt))
     step.verification_status = verification.status
-    this.persistVerificationEvidence(run, step, verification)
-    this.audit.record(run.run_id, 'step.verified', adapter.name, { step_id: step.step_id, verification })
+    await this.persistVerificationEvidence(run, step, verification)
+    await this.audit.record(run.run_id, 'step.verified', adapter.name, { step_id: step.step_id, verification })
 
     if (verification.status !== 'PASS') {
-      this.setStepStatus(step, 'failed')
+      await this.setStepStatus(step, 'failed')
       return {
         code: verification.status === 'UNKNOWN' ? 'VERIFICATION_UNKNOWN' : 'VERIFICATION_FAILED',
         message: verification.summary,
@@ -253,7 +253,7 @@ export class RunnerEngine {
       }
     }
 
-    this.setStepStatus(step, 'succeeded')
+    await this.setStepStatus(step, 'succeeded')
     return undefined
   }
 
@@ -264,12 +264,12 @@ export class RunnerEngine {
     execution: AdapterExecutionResult,
     context: ReturnType<typeof contextShape>,
   ): Promise<RunnerError> {
-    this.setStepStatus(step, 'verifying')
+    await this.setStepStatus(step, 'verifying')
     const verification = await adapter.verify(execution, step.expected_outcome, context)
     step.verification_status = verification.status
-    this.persistVerificationEvidence(run, step, verification)
-    this.audit.record(run.run_id, 'step.unknown_outcome_verified', adapter.name, { step_id: step.step_id, verification })
-    this.setStepStatus(step, 'failed')
+    await this.persistVerificationEvidence(run, step, verification)
+    await this.audit.record(run.run_id, 'step.unknown_outcome_verified', adapter.name, { step_id: step.step_id, verification })
+    await this.setStepStatus(step, 'failed')
     return {
       code: 'UNKNOWN_OUTCOME',
       message: `Mutation was not retried because its outcome is unknown. ${verification.summary}`,
@@ -279,7 +279,7 @@ export class RunnerEngine {
     }
   }
 
-  private persistExecutionEvidence(run: Run, step: Step, execution: AdapterExecutionResult): void {
+  private async persistExecutionEvidence(run: Run, step: Step, execution: AdapterExecutionResult): Promise<void> {
     const payload = redact({
       success: execution.success,
       provider: execution.provider,
@@ -289,18 +289,18 @@ export class RunnerEngine {
       error: execution.error,
       side_effect_reference: execution.side_effect_reference,
     })
-    this.appendEvidence(run, step, 'execution', execution.provider, payload)
+    await this.appendEvidence(run, step, 'execution', execution.provider, payload)
   }
 
-  private persistVerificationEvidence(run: Run, step: Step, verification: { status: string; summary: string; details?: Record<string, unknown> }): void {
-    this.appendEvidence(run, step, 'verification', step.tool, redact({
+  private async persistVerificationEvidence(run: Run, step: Step, verification: { status: string; summary: string; details?: Record<string, unknown> }): Promise<void> {
+    await this.appendEvidence(run, step, 'verification', step.tool, redact({
       status: verification.status,
       summary: verification.summary,
       details: verification.details,
     }))
   }
 
-  private appendEvidence(run: Run, step: Step, type: Evidence['type'], source: string, payload: Record<string, unknown>): void {
+  private async appendEvidence(run: Run, step: Step, type: Evidence['type'], source: string, payload: Record<string, unknown>): Promise<void> {
     const evidence: Evidence = {
       evidence_id: this.createId(),
       run_id: run.run_id,
@@ -311,45 +311,45 @@ export class RunnerEngine {
       captured_at: this.now(),
       integrity_hash: integrityHash(payload),
     }
-    this.store.appendEvidence(evidence)
-    this.audit.record(run.run_id, 'evidence.persisted', 'runner-os', { evidence_id: evidence.evidence_id, step_id: step.step_id, type })
+    await this.store.appendEvidence(evidence)
+    await this.audit.record(run.run_id, 'evidence.persisted', 'runner-os', { evidence_id: evidence.evidence_id, step_id: step.step_id, type })
   }
 
-  private setRunStatus(run: Run, next: Run['status']): void {
+  private async setRunStatus(run: Run, next: Run['status']): Promise<void> {
     run.status = transitionRun(run.status, next)
-    this.store.saveRun(run)
-    this.audit.record(run.run_id, 'run.status_changed', 'runner-os', { status: next })
+    await this.store.saveRun(run)
+    await this.audit.record(run.run_id, 'run.status_changed', 'runner-os', { status: next })
   }
 
-  private setStepStatus(step: Step, next: Step['status']): void {
+  private async setStepStatus(step: Step, next: Step['status']): Promise<void> {
     step.status = transitionStep(step.status, next)
-    this.store.saveStep(step)
-    this.audit.record(step.run_id, 'step.status_changed', 'runner-os', { step_id: step.step_id, status: next })
+    await this.store.saveStep(step)
+    await this.audit.record(step.run_id, 'step.status_changed', 'runner-os', { step_id: step.step_id, status: next })
   }
 
-  private finishFailure(run: Run, steps: Step[], errors: RunnerError[], idempotencyKey: string): DeliveryResult {
-    if (!['failed', 'blocked', 'cancelled'].includes(run.status)) this.setRunStatus(run, 'failed')
+  private async finishFailure(run: Run, steps: Step[], errors: RunnerError[], idempotencyKey: string): Promise<DeliveryResult> {
+    if (!['failed', 'blocked', 'cancelled'].includes(run.status)) await this.setRunStatus(run, 'failed')
     run.error = errors[0]
     return this.finish(run, steps, errors, idempotencyKey)
   }
 
-  private finishCancelled(run: Run, steps: Step[], idempotencyKey: string, error?: RunnerError): DeliveryResult {
-    if (run.status !== 'cancelled') this.setRunStatus(run, 'cancelled')
+  private async finishCancelled(run: Run, steps: Step[], idempotencyKey: string, error?: RunnerError): Promise<DeliveryResult> {
+    if (run.status !== 'cancelled') await this.setRunStatus(run, 'cancelled')
     return this.finish(run, steps, error ? [error] : [], idempotencyKey)
   }
 
-  private finish(run: Run, steps: Step[], errors: RunnerError[], idempotencyKey: string): DeliveryResult {
+  private async finish(run: Run, steps: Step[], errors: RunnerError[], idempotencyKey: string): Promise<DeliveryResult> {
     run.finished_at = this.now()
-    const current = steps.length ? this.currentSteps(run.run_id) : []
-    const result = createDeliveryResult(run, current, this.store.getEvidence(run.run_id), errors)
+    const current = steps.length ? await this.currentSteps(run.run_id) : []
+    const result = createDeliveryResult(run, current, await this.store.getEvidence(run.run_id), errors)
     run.result = result
-    this.store.saveRun(run)
-    this.audit.record(run.run_id, 'run.delivered', 'runner-os', { status: result.status, error_count: result.errors.length })
-    if (idempotencyKey && run.status !== 'awaiting_approval') this.store.saveIdempotentResult(idempotencyKey, result)
+    await this.store.saveRun(run)
+    await this.audit.record(run.run_id, 'run.delivered', 'runner-os', { status: result.status, error_count: result.errors.length })
+    if (idempotencyKey && run.status !== 'awaiting_approval') await this.store.saveIdempotentResult(idempotencyKey, result)
     return result
   }
 
-  private currentSteps(runId: string): Step[] { return this.store.getSteps(runId) }
+  private async currentSteps(runId: string): Promise<Step[]> { return this.store.getSteps(runId) }
   private isCancelled(runId: string): boolean { return this.cancelledRuns.has(runId) }
 }
 
