@@ -55,7 +55,7 @@ export class GitHubReadAdapter implements ToolAdapter {
   private readonly timeoutMs: number
 
   constructor(options: GitHubReadAdapterOptions = {}) {
-    this.fetchImpl = options.fetch ?? fetch
+    this.fetchImpl = options.fetch ?? ((input, init) => fetch(input, init))
     this.token = options.token
     this.timeoutMs = options.timeoutMs ?? 10_000
   }
