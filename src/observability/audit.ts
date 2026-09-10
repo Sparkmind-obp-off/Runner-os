@@ -1,6 +1,6 @@
 import type { AuditEvent } from '../core/types'
 import type { RunnerStore } from '../persistence/store'
-import { redact } from '../security/redaction'
+import { redact, redactFreeText } from '../security/redaction'
 
 export class AuditRecorder {
   constructor(
@@ -15,7 +15,7 @@ export class AuditRecorder {
       run_id: runId,
       timestamp: this.now(),
       event_type: eventType,
-      actor,
+      actor: redactFreeText(actor) ?? 'unknown',
       metadata: redact(metadata),
     }
     await this.store.appendAudit(event)

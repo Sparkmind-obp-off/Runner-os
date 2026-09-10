@@ -3,10 +3,10 @@ import type { RunStatus, StepStatus } from './types'
 const runTransitions: Record<RunStatus, RunStatus[]> = {
   queued: ['validating', 'cancelled'],
   validating: ['planning', 'failed', 'cancelled'],
-  planning: ['awaiting_approval', 'executing', 'blocked', 'failed', 'cancelled'],
+  planning: ['awaiting_approval', 'executing', 'blocked', 'failed', 'cancelled', 'expired'],
   awaiting_approval: ['executing', 'blocked', 'cancelled', 'expired'],
-  executing: ['verifying', 'failed', 'cancelled'],
-  verifying: ['completed', 'failed', 'cancelled'],
+  executing: ['verifying', 'failed', 'cancelled', 'blocked'],
+  verifying: ['completed', 'failed', 'cancelled', 'blocked'],
   completed: [], failed: [], cancelled: [], blocked: [], expired: [],
 }
 
@@ -15,7 +15,7 @@ const stepTransitions: Record<StepStatus, StepStatus[]> = {
   validating: ['executing', 'blocked', 'failed'],
   executing: ['verifying', 'retryable_failure', 'failed', 'skipped'],
   retryable_failure: ['executing', 'failed'],
-  verifying: ['succeeded', 'failed'],
+  verifying: ['succeeded', 'retryable_failure', 'failed'],
   succeeded: [], failed: [], blocked: [], skipped: [],
 }
 

@@ -6,6 +6,7 @@ export interface MockAdapterOptions {
   unknownOutcome?: boolean
   verificationFailure?: boolean
   delayMs?: number
+  unknownVerificationStatus?: VerificationResult['status']
 }
 
 export class MockToolAdapter implements ToolAdapter {
@@ -63,6 +64,9 @@ export class MockToolAdapter implements ToolAdapter {
   }
 
   async verify(result: AdapterExecutionResult, expected: Record<string, unknown> | undefined, _context: ExecutionContext): Promise<VerificationResult> {
+    if (!result.success && result.retryability === 'unknown' && this.options.unknownVerificationStatus) {
+      return { status: this.options.unknownVerificationStatus, summary: `Mock unknown outcome verification: ${this.options.unknownVerificationStatus}.` }
+    }
     if (this.options.verificationFailure) return { status: 'FAIL', summary: 'Mock verification was configured to fail.' }
     if (!result.success) return { status: result.retryability === 'unknown' ? 'UNKNOWN' : 'FAIL', summary: result.error?.message ?? 'Execution failed.' }
     if (!expected) return { status: 'PASS', summary: 'Execution result exists and is independently observable.' }

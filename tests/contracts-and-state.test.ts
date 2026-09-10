@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { normalizeTask, validateTask, ContractValidationError } from '../src/core/contracts'
 import { transitionRun, transitionStep } from '../src/core/state-machine'
-import { redact } from '../src/security/redaction'
+import { redact, redactFreeText } from '../src/security/redaction'
 import { task } from './helpers'
 
 describe('Phase 0 contracts', () => {
@@ -36,6 +36,10 @@ describe('security redaction', () => {
     expect(redact({ token: 'secret-value', nested: { api_key: 'key-value', value: 'safe' } })).toEqual({
       token: '[REDACTED]', nested: { api_key: '[REDACTED]', value: 'safe' },
     })
+  })
+
+  it('redacts credential-like values embedded in free text', () => {
+    expect(redactFreeText('approved; token=must-not-persist Bearer abc.def')).toBe('approved; token=[REDACTED] Bearer [REDACTED]')
   })
 
   it('does not mutate task fixtures', () => {

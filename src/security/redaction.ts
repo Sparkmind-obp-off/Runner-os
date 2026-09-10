@@ -11,3 +11,10 @@ export function redact<T>(value: T): T {
   }
   return value
 }
+
+export function redactFreeText(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  return value
+    .replace(/(bearer\s+)[a-z0-9._~-]+/gi, '$1[REDACTED]')
+    .replace(/((?:api[_-]?key|token|password|passwd|secret|credential)\s*[:=]\s*)\S+/gi, '$1[REDACTED]')
+}

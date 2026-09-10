@@ -1,4 +1,4 @@
-import type { ApprovalRecord, PolicyDecision, PolicyContext, RiskLevel, Step } from '../core/types'
+import type { SubmittedApprovalRecord, PolicyDecision, PolicyContext, RiskLevel, Step } from '../core/types'
 
 export interface PolicyEvaluator {
   evaluate(step: Step, context: PolicyContext): PolicyDecision
@@ -30,7 +30,7 @@ export class DefaultPolicyEvaluator implements PolicyEvaluator {
   }
 }
 
-function findApproval(approvals: ApprovalRecord[], step: Step, now: string): ApprovalRecord | undefined {
+function findApproval(approvals: SubmittedApprovalRecord[], step: Step, now: string): SubmittedApprovalRecord | undefined {
   return approvals.find((approval) =>
     approval.requested_action === step.action
     && approval.risk_level === step.risk_level

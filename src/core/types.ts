@@ -2,6 +2,8 @@ export type RiskLevel = 0 | 1 | 2 | 3
 export type PolicyDecisionType = 'ALLOW' | 'REQUIRE_APPROVAL' | 'DENY'
 export type VerificationStatus = 'PASS' | 'FAIL' | 'UNKNOWN'
 export type Retryability = 'retryable' | 'non_retryable' | 'unknown'
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired'
+export type RecoveryOutcome = 'KNOWN_SUCCESS' | 'KNOWN_FAILURE' | 'UNKNOWN_REQUIRES_VERIFICATION' | 'RECOVERY_BLOCKED'
 
 export type RunStatus =
   | 'queued' | 'validating' | 'planning' | 'awaiting_approval'
@@ -19,6 +21,21 @@ export type AdapterErrorCode =
 
 export interface ApprovalRecord {
   approval_id: string
+  run_id: string
+  step_id: string
+  requested_action: string
+  risk_level: RiskLevel
+  status: ApprovalStatus
+  requested_at: string
+  decided_at?: string
+  approver?: string
+  reason?: string
+  expires_at?: string
+}
+
+/** Legacy task-input approvals are normalized into durable records before use. */
+export interface SubmittedApprovalRecord {
+  approval_id: string
   run_id?: string
   step_id?: string
   requested_action: string
@@ -32,7 +49,7 @@ export interface ApprovalRecord {
 export interface PolicyContext {
   denied_actions?: string[]
   allowed_risk_levels?: RiskLevel[]
-  approvals?: ApprovalRecord[]
+  approvals?: SubmittedApprovalRecord[]
 }
 
 export interface TaskStepInput {
@@ -98,6 +115,9 @@ export interface Run {
   policy_decision?: PolicyDecision
   result?: DeliveryResult
   error?: RunnerError
+  cancellation_requested_at?: string
+  cancellation_requested_by?: string
+  recovery_outcome?: RecoveryOutcome
 }
 
 export interface Step {
@@ -119,6 +139,7 @@ export interface Step {
   error?: RunnerError
   verification_status: VerificationStatus
   policy_decision?: PolicyDecision
+  recovery_outcome?: RecoveryOutcome
 }
 
 export interface Evidence {

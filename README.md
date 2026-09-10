@@ -1,24 +1,28 @@
 # Runner OS
 
-Runner OS is a provider-independent execution runtime that converts structured tasks into policy-checked, verified, evidence-backed results.
+Runner OS is a provider-independent execution runtime that turns structured tasks into policy-checked, verified, evidence-backed results.
 
 ## Current status
 
-**Phase 2 — Durable Persistence is complete.** The execution flow remains:
+**Phase 3 — Safety & Recovery Hardening is complete.**
 
-`Task → Normalize → Validate → Plan → Policy Check → Execute → Observe → Verify → Persist Evidence → Audit → Deliver Result`
+`Task → Normalize → Validate → Plan → Policy Check → Approval Gate → Execute → Observe → Verify → Persist Evidence → Audit → Recover/Advance/Stop → Deliver Result`
 
-The core engine remains provider-agnostic. `RunnerStore` accepts synchronous or asynchronous implementations; Phase 1 tests use `InMemoryRunnerStore`, while Cloudflare requests with a `DB` binding use `D1RunnerStore`.
+The core remains provider-independent. `RunnerStore` has in-memory and Cloudflare D1 implementations; all safety decisions pass through that abstraction.
 
 ## Completed features
 
-- Strict task/run/step/evidence/audit contracts and state machines.
-- Deterministic sequential planner, policy gate, bounded retries, cancellation, unknown-outcome verification, and mock adapter.
-- Durable D1 storage for tasks, runs, steps, evidence, audit events, and idempotency claims/results.
-- Database-backed idempotency claims using a primary-key uniqueness constraint.
-- Append-only evidence and audit inserts with redaction and preserved integrity hashes.
-- Restart/store re-instantiation, schema reproducibility, serialization, terminal-state, failure, and concurrency tests.
-- All Phase 1 mandatory scenarios remain covered.
+- Strict task, run, step, evidence, approval, recovery, and audit contracts.
+- Deterministic sequential planning and explicit run/step state machines.
+- Policy enforcement for risk levels 0–3.
+- Durable approval requests and idempotent approval decisions.
+- Durable cancellation intent across runtime/store re-instantiation.
+- D1-backed idempotency claims with owner tokens, leases, renewal, deterministic expiry, and atomic recovery.
+- Restart recovery that classifies non-terminal runs instead of blindly replaying them.
+- Verification-first handling for interrupted or unknown side effects.
+- Append-oriented, redacted evidence and safety audit events.
+- Completed idempotency-result replay without duplicate Runner OS execution.
+- Phase 1 and Phase 2 regression coverage plus deterministic Phase 3 safety tests.
 
 ## API entry points
 
@@ -26,31 +30,97 @@ The core engine remains provider-agnostic. `RunnerStore` accepts synchronous or 
 |---|---|---|
 | `GET` | `/` | Service metadata and execution flow |
 | `GET` | `/health` | Health check |
-| `POST` | `/api/runs` | Execute one structured task |
-| `GET` | `/api/runs/:runId` | Retrieve durable run, steps, evidence, and audit |
+| `POST` | `/api/runs` | Submit and execute one structured task |
+| `GET` | `/api/runs/:runId` | Retrieve run, steps, evidence, audit, and approval |
+| `POST` | `/api/runs/:runId/approval` | Submit `approved` or `rejected` durable decision |
+| `POST` | `/api/runs/:runId/cancel` | Persist idempotent cancellation intent |
+| `POST` | `/api/runs/:runId/recover` | Explicitly recover one non-terminal run |
+
+Approval request:
 
 ```bash
-curl -X POST http://localhost:3000/api/runs \
+curl -X POST http://localhost:3000/api/runs/RUN_ID/approval \
   -H 'content-type: application/json' \
-  --data @examples/read-only-task.json
+  -d '{"decision":"approved","actor":"approver-reference","reason":"Reviewed"}'
 ```
 
-## D1 architecture
+Cancellation and recovery:
 
-Migration `migrations/0001_runner_store.sql` creates only the current domain tables:
+```bash
+curl -X POST http://localhost:3000/api/runs/RUN_ID/cancel \
+  -H 'content-type: application/json' \
+  -d '{"actor":"operator-reference"}'
+curl -X POST http://localhost:3000/api/runs/RUN_ID/recover
+```
 
-- `tasks`
-- `runs`
-- `steps`
-- `evidence`
-- `audit_events`
-- `idempotency_claims`
+No approval UI, scheduler, queue, or provider-specific cancellation API is included.
 
-Foreign keys protect run-owned records, indexes cover run/status/order lookups, and SQL checks constrain statuses and risk levels. JSON fields use canonical key ordering for deterministic serialization. Terminal run/step transitions are rejected by both the state machine and persistence update guards.
+## Phase 3 safety model
 
-The `DB` binding in `wrangler.jsonc` targets `runner-os-production`. Replace the placeholder database ID with the ID returned when creating the production database.
+### Durable approval
 
-## Setup and migrations
+Risk level 2/3 actions cannot execute without a valid approval. A pending record contains a stable approval/run/step identity, requested action and risk, timestamps, status, and non-secret actor/reason metadata. Pending approval survives restart. Approval submission is atomic and idempotent when the same decision is repeated. Rejection and effective expiry are terminal barriers and are audited.
+
+Legacy task-input approvals remain accepted for Phase 1 compatibility, but are normalized into the durable approval table before policy evaluation. New approval flows should use the approval endpoint.
+
+### Idempotency ownership and leases
+
+A claim has a stable key, owning run, owner token, `claimed`/`completed` lifecycle, heartbeat, and lease expiry. Database uniqueness prevents two live claims for one key in the configured D1 database. Renewal requires the current owner token. Recovery uses an atomic conditional update and succeeds only after deterministic lease expiry. Completed results remain replayable.
+
+An approval wait deliberately expires its execution lease so the same durable run can resume under a new owner after approval. This does not release the idempotency key to another run.
+
+### Restart recovery
+
+Recovery is explicit via `RunnerEngine.recover`, `recoverAll`, or the recovery endpoint:
+
+- `queued`, `validating`, and `planning`: safely resume deterministic non-side-effecting work when durable task state exists.
+- `awaiting_approval`: remain pending, stop on rejection/expiry, or resume after a valid durable approval.
+- `executing`/`verifying` read-only work: may resume under normal state-machine and lease rules.
+- interrupted side-effecting work: classify as unknown and verify before any retry decision.
+- terminal runs: return their persisted result and are never resurrected.
+
+Recovery attempts and decisions are persisted/audited and repeated recovery cannot duplicate an already verified or blocked side effect.
+
+### Unknown outcomes
+
+Internal recovery classifications are:
+
+- `KNOWN_SUCCESS`
+- `KNOWN_FAILURE`
+- `UNKNOWN_REQUIRES_VERIFICATION`
+- `RECOVERY_BLOCKED`
+
+For an ambiguous mutation, Runner OS persists the classification and evidence, invokes adapter verification, and then:
+
+1. verification `PASS` → persist success; never execute again;
+2. verification `FAIL` → retry only if policy, approval, adapter idempotency, cancellation, and lease ownership permit it;
+3. verification `UNKNOWN` → stop in explicit `blocked` / `RECOVERY_BLOCKED` state; never guess.
+
+### Cancellation
+
+Cancellation intent is persisted on the run. Once observed, no new side-effecting step begins. An external request already in flight may still finish; cancellation does not claim rollback. Interrupted side effects are verified before finalization. Repeated cancellation requests are idempotent and only the first request adds the request audit event.
+
+### Audit and redaction
+
+Safety audit events include approval requested/decided/expired, cancellation requested/observed, claim acquisition/renewal/recovery, recovery start/completion/blocking, unknown-outcome classification, verification attempts/results, and recovery retry allow/deny decisions. Evidence and metadata pass through recursive sensitive-key redaction. No credentials are required or persisted by the mock adapter.
+
+## D1 data architecture
+
+Migration `migrations/0001_runner_store.sql` provides Phase 2 tables:
+
+- `tasks`, `runs`, `steps`, `evidence`, `audit_events`, `idempotency_claims`
+
+Migration `migrations/0002_safety_recovery.sql` upgrades Phase 2 without rewriting it:
+
+- adds durable cancellation and recovery classifications to runs;
+- adds step recovery classification;
+- adds owner-token/heartbeat/lease/recovery fields to idempotency claims;
+- creates `approvals` and `recovery_attempts`;
+- adds approval, lease, run-recovery, and recovery-history indexes.
+
+Guarantees are scoped to one configured D1 database. SQL uniqueness and conditional updates provide claim/decision concurrency protection within that scope.
+
+## Setup, migrations, and tests
 
 ```bash
 npm install
@@ -61,6 +131,8 @@ npm run build
 npm run check
 ```
 
+The tests use a local SQLite-backed D1 contract harness. They apply Phase 2 then Phase 3 migrations in order, proving both upgrade and fresh-schema behavior without production credentials.
+
 Local preview:
 
 ```bash
@@ -69,46 +141,32 @@ pm2 start ecosystem.config.cjs
 curl http://localhost:3000/health
 ```
 
-Production D1 setup (BYOK Cloudflare account):
+## Cloudflare BYOK deployment
+
+- **Platform:** Cloudflare Pages + D1
+- **Production branch:** `main`
+- **D1 binding:** `DB`
+- **Database name:** `runner-os-production`
+- **Secrets:** none for the mock adapter; never commit `.dev.vars`, `.env`, tokens, or credentials.
 
 ```bash
-npx wrangler d1 create runner-os-production
-# Put the returned database_id in wrangler.jsonc
+npx wrangler d1 create runner-os-production       # first setup only
+# Put the returned database_id in wrangler.jsonc.
 npm run db:migrate:prod
 npm run deploy
 ```
 
-Tests use a local SQLite-backed D1 contract harness; they require no Cloudflare account or production credentials. Wrangler local migration additionally verifies migration compatibility against local D1.
-
-## Durability and concurrency guarantees
-
-- Completed and failed runs, steps, execution/verification evidence, audits, and idempotency results survive Worker/store re-instantiation.
-- `idempotency_claims.idempotency_key` is the database primary key. `INSERT OR IGNORE` makes claim ownership atomic within one D1 database: only one competing run can claim a stable key.
-- A duplicate completed request receives the original persisted result. A duplicate arriving while the owner is still running is suppressed with an in-progress warning and performs no adapter side effect.
-- Guarantees are scoped to one configured D1 database. They do not coordinate separate databases/accounts or a provider action executed outside Runner OS.
-- D1 provides transactional semantics per statement; this phase does not implement queues, leases, abandoned-claim recovery, or parallel execution.
-- Evidence/audit APIs are append-oriented. Duplicate primary keys fail rather than overwrite records.
-- Sensitive key names are redacted before evidence, audit, task input, step input/output, and idempotency result JSON are persisted.
-
-## Data model
-
-`Task 1 → N Run`, `Run 1 → N Step`, `Step 1 → N Evidence`, and `Run 1 → N AuditEvent`. Validation failures retain a run with a nullable database task reference represented as `unresolved` in the domain model.
-
-## Deployment
-
-- **Platform:** Cloudflare Pages + D1
-- **Production branch:** `main`
-- **Binding:** `DB`
-- **Secrets:** none required for the mock adapter; never commit `.dev.vars`, `.env`, tokens, or credentials.
+The currently configured production D1 ID must belong to the Cloudflare account selected through the Deploy panel.
 
 ## Known limitations / not implemented
 
-- No abandoned idempotency-claim lease or resume mechanism.
-- No durable approval workflow beyond approval data included in the submitted task.
-- No cross-database idempotency coordination.
-- No real external adapters, authentication, tenancy, queues, scheduling, webhooks, parallel execution, UI, or operator integration.
-- Unknown mutation outcomes are verified once and not autonomously recovered later.
+- No provider-specific adapter or provider cancellation API.
+- No automatic queue/scheduler; recovery is invoked explicitly or by application code.
+- No parallel execution or cross-database idempotency coordination.
+- No authentication, multi-tenant authorization, dashboard, voice, webhooks, billing, or analytics platform.
+- A verification-inconclusive side effect is intentionally blocked and requires a new explicitly authorized operational path; blocked/terminal runs are never silently resumed.
+- Legacy inline approvals are retained only for backward compatibility; production callers should use a separately authorized approval endpoint boundary.
 
 ## Exact next recommended phase
 
-**Phase 3 — Safety & Recovery hardening:** add durable approval/resume records, idempotency claim leases and abandoned-run recovery, and restart-aware cancellation/recovery semantics. Do not add real providers or an operator UI until that reliability gate passes.
+**Phase 4 — Real Adapter:** implement one low-risk, independently verifiable external adapter behind the existing contract. Preserve Phase 3 approval, lease, cancellation, verification-first recovery, redaction, and audit invariants. Do not begin operator/UI work until the real adapter passes the shared contract and recovery suites.
