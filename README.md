@@ -1,61 +1,140 @@
 # Runner OS
 
-Runner OS is the execution layer for SparkMind's AI Business Operator direction.
+Runner OS is the provider-independent execution layer for SparkMind's AI Business Operator direction. It receives an already-selected task, executes controlled steps through adapters, verifies actual outcomes, preserves evidence and audit records, and returns a structured result.
 
-Its job is simple: **receive a validated task → execute the task through tools/connectors → verify the result → record evidence → return a usable outcome**.
+## Current status
 
-Runner OS is intentionally separated from the upstream intelligence/validation layer. It should not invent demand, opportunities, or business priorities. It executes work that has already been selected.
+**Implemented: Phase 0 → Phase 1 MVP vertical slice.**
 
-## Core Loop
+The repository was documentation-only. The smallest production-sensible stack selected is:
+
+- **TypeScript** for explicit contracts and strict domain modeling.
+- **Hono** for a minimal HTTP boundary.
+- **Cloudflare Pages/Workers** for an edge-deployable runtime using Web APIs only.
+- **Vitest** for unit, adapter-contract, integration, API, and end-to-end tests.
+- **In-memory repositories** behind interfaces, as explicitly allowed for Phase 1.
+
+No UI, real provider integration, queue, scheduler, or unrelated operator feature was added.
+
+## Proven execution flow
 
 ```text
 Task
-  ↓
-Normalize
-  ↓
-Plan
-  ↓
-Execute
-  ↓
-Observe
-  ↓
-Verify
-  ↓
-Persist Evidence
-  ↓
-Deliver Result
+→ Normalize
+→ Validate
+→ Plan
+→ Policy Check
+→ Execute
+→ Observe
+→ Verify
+→ Persist Evidence
+→ Audit
+→ Deliver Result
 ```
 
-## Design Principles
+## Completed features
 
-1. **Execution first** — optimize for reliable completion of real work.
-2. **Tool-agnostic** — connectors and APIs are replaceable adapters.
-3. **Evidence-driven** — every meaningful action produces an auditable record.
-4. **Idempotent where possible** — retries must not create accidental duplicates.
-5. **Human approval for risky actions** — external/public/financial/destructive actions require explicit policy gates.
-6. **Observable by default** — runs, steps, errors, latency, and outputs are traceable.
-7. **Provider-independent** — the system must not depend permanently on one AI provider.
+- Task, run, step, evidence, audit, policy, adapter, error, verification, and delivery contracts.
+- Enforced run and step state machines.
+- Deterministic sequential planner and execution engine.
+- Provider-independent adapter registry and tool contract.
+- Deterministic `mock.tool` adapter with read/write behavior.
+- Risk levels 0–3 with `ALLOW`, `REQUIRE_APPROVAL`, and `DENY` decisions.
+- Task-level duplicate suppression and stable step idempotency keys.
+- Bounded retry for retryable, idempotency-protected operations.
+- Verification-first handling for unknown mutation outcomes.
+- Execution and verification evidence with integrity hashes.
+- Append-oriented, redacted audit events.
+- Structured delivery results with outputs, evidence, warnings, errors, and next action.
+- Secret redaction at adapter, evidence, audit, and delivery boundaries.
+- Automated coverage of all 15 mandatory scenarios in `docs/08_TESTING_AND_ACCEPTANCE.md`.
 
-## Current Scope
+## API entry points
 
-The first MVP should establish the execution runtime, task/run model, tool adapter contract, verification layer, audit trail, and a small number of safe tools. Advanced autonomous behavior comes later.
+| Method | URI | Purpose |
+|---|---|---|
+| `GET` | `/` | Service metadata and implemented flow |
+| `GET` | `/health` | Health check |
+| `POST` | `/api/runs` | Normalize, validate, and execute one task |
+| `GET` | `/api/runs/:runId` | Inspect an in-memory run, steps, evidence, and audit trace |
 
-## Repository Direction
+### Execute the sample task
 
-- `docs/` — architecture, contracts, execution policies, testing, and roadmap.
-- `src/` — Runner OS runtime implementation.
-- `tests/` — unit, integration, contract, and end-to-end tests.
-- `examples/` — example task definitions and execution traces.
+```bash
+curl -X POST http://localhost:3000/api/runs \
+  -H 'content-type: application/json' \
+  --data @examples/read-only-task.json
+```
 
-## Non-Goals for MVP
+## Development
 
-- Building a general-purpose autonomous agent marketplace.
-- Automatically sending public messages without policy/approval controls.
-- Replacing the upstream demand-intelligence database.
-- Locking the architecture to a single model vendor.
+```bash
+npm install
+npm run typecheck
+npm test
+npm run build
+```
 
-## Status
+Sandbox preview:
 
-**Phase 0 — Foundation definition.**
+```bash
+npm run build
+pm2 start ecosystem.config.cjs
+curl http://localhost:3000/health
+```
 
-The next implementation step is to turn the contracts in `docs/` into the smallest working runner, then validate it against real execution scenarios.
+Full quality gate:
+
+```bash
+npm run check
+```
+
+## Data architecture
+
+### Models
+
+- `Task 1 → N Run`
+- `Run 1 → N Step`
+- `Step 1 → N Evidence`
+- `Run 1 → N AuditEvent`
+
+### Storage
+
+Phase 1 uses `InMemoryRunnerStore` through the replaceable `RunnerStore` interface. Tasks, runs, steps, evidence, audits, and idempotency results are process-local and are not durable across restarts or isolate eviction.
+
+Evidence and audit collections are append-oriented through their public repository methods. Returned values are structured clones so callers cannot mutate stored records by reference.
+
+## Security and policy behavior
+
+- Level 0 and level 1 operations execute automatically unless explicitly denied.
+- Level 2 and level 3 operations require a matching valid approval.
+- Rejected or disallowed actions are blocked before adapter execution.
+- Unknown side-effect outcomes are verified and are never blindly retried.
+- Tool output remains untrusted data and cannot redefine policy.
+- Sensitive keys such as tokens, passwords, API keys, and credentials are redacted.
+- No secrets are stored in source control.
+
+## Deployment
+
+- **Platform:** Cloudflare Pages
+- **Configuration:** `wrangler.jsonc`
+- **Production branch:** `main`
+- **Status:** deployment performed after the implementation quality gate
+- **Production URL:** populated after successful deployment
+
+The in-memory runtime is suitable for proving Phase 0 → Phase 1 behavior but not for production durability. Cloudflare D1 is the recommended next persistence implementation.
+
+## Not yet implemented
+
+- Durable D1 persistence and restart recovery.
+- Cross-isolate/concurrent idempotency claims.
+- Resume flow for runs waiting on approval.
+- Durable approval records.
+- Unknown-outcome recovery beyond the current verification attempt.
+- Real external adapter.
+- Authentication, tenant isolation, rate limiting, metrics, and operations runbooks.
+- Queue, scheduling, webhooks, and parallel execution.
+
+## Exact next recommended phase
+
+**Phase 2 — Persistence:** implement a Cloudflare D1-backed `RunnerStore` for tasks, runs, steps, evidence, audit events, and idempotency records; add migrations and restart-recovery tests. Do not add a real connector or operator UI before this persistence exit gate passes.

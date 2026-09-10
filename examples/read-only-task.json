@@ -1,0 +1,28 @@
+{
+  "task_id": "example-read-001",
+  "type": "mock.workflow",
+  "objective": "Execute and verify a safe read-only mock operation",
+  "input": {
+    "steps": [
+      {
+        "tool": "mock.tool",
+        "action": "read",
+        "input": {
+          "operation": "inspect",
+          "value": "runner-os"
+        },
+        "expected_outcome": {
+          "accepted": true,
+          "action_value": "runner-os"
+        },
+        "risk_level": 0
+      }
+    ]
+  },
+  "constraints": {},
+  "risk_level": 0,
+  "requested_at": "2026-09-10T00:00:00.000Z",
+  "requested_by": "runner-os-example",
+  "policy_context": {},
+  "idempotency_key": "example-read-001-v1"
+}
