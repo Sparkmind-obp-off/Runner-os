@@ -97,6 +97,7 @@ export interface RunnerError {
 export interface AdapterExecutionResult {
   success: boolean
   provider: string
+  provider_version?: string
   operation: string
   provider_request_id?: string
   output?: Record<string, unknown>

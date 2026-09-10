@@ -53,6 +53,7 @@ export class MockToolAdapter implements ToolAdapter {
     const result: AdapterExecutionResult = {
       success: true,
       provider: this.name,
+      provider_version: this.version,
       operation: String(input.operation ?? 'mock-operation'),
       provider_request_id: `mock-request-${this.executionCalls}`,
       output,
@@ -83,6 +84,7 @@ function failure(code: string, message: string, retryability: 'retryable' | 'non
   return {
     success: false,
     provider: 'mock.tool',
+    provider_version: '1.0.0',
     operation: 'mock-operation',
     error: { code, message, retryability, attempt },
     retryability,

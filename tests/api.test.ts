@@ -8,7 +8,7 @@ describe('Cloudflare Pages API surface', () => {
     const root = await app.request('/')
     expect(health.status).toBe(200)
     expect(await health.json()).toEqual({ status: 'ok' })
-    expect(await root.json()).toMatchObject({ name: 'Runner OS', phase: 'Phase 0 → Phase 3' })
+    expect(await root.json()).toMatchObject({ name: 'Runner OS', phase: 'Phase 0 → Phase 4' })
   })
 
   it('executes a task and exposes its trace', async () => {

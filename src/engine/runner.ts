@@ -307,7 +307,7 @@ export class RunnerEngine {
       if (retryDecision.decision !== 'ALLOW') { await this.setStepStatus(step, 'failed'); return { code: 'POLICY_CHANGED', message: 'Policy or durable approval no longer allows execution.', retryability: 'non_retryable', step_id: step.step_id, attempt } }
       if (!await this.renewLease(task, run, ownerToken)) { await this.setStepStatus(step, 'failed'); return { code: 'IDEMPOTENCY_LEASE_LOST', message: 'Execution lease is no longer owned by this run.', retryability: 'unknown', step_id: step.step_id, attempt } }
       try { execution = await adapter.execute(redact(step.input), contextFor(attempt)) }
-      catch (error) { execution = { success: false, provider: adapter.name, operation: step.action, error: { code: 'UNKNOWN_PROVIDER_ERROR', message: safeMessage(error), retryability: 'unknown', step_id: step.step_id, attempt }, retryability: 'unknown' } }
+      catch { execution = { success: false, provider: adapter.name, provider_version: adapter.version, operation: step.action, error: { code: 'UNKNOWN_PROVIDER_ERROR', message: 'Adapter execution failed without a normalized result.', retryability: 'unknown', step_id: step.step_id, attempt }, retryability: 'unknown' } }
       await this.persistExecutionEvidence(run, step, execution)
       await this.audit.record(run.run_id, 'step.observed', adapter.name, { step_id: step.step_id, attempt, result: execution })
       if (execution.success) break
@@ -420,15 +420,17 @@ export class RunnerEngine {
   private async executionFromEvidence(runId: string, step: Step): Promise<AdapterExecutionResult> {
     const evidence = (await this.store.getEvidence(runId)).filter((item) => item.step_id === step.step_id && item.type === 'execution').at(-1)
     const payload = evidence?.payload_reference ?? {}
-    return { success: payload.success === true, provider: String(payload.provider ?? step.tool), operation: String(payload.operation ?? step.action),
-      provider_request_id: typeof payload.provider_request_id === 'string' ? payload.provider_request_id : undefined,
+    return { success: payload.success === true, provider: String(payload.provider ?? step.tool),
+      provider_version: typeof payload.provider_version === 'string' ? payload.provider_version : undefined,
+      operation: String(payload.operation ?? step.action), provider_request_id: typeof payload.provider_request_id === 'string' ? payload.provider_request_id : undefined,
       output: typeof payload.output === 'object' && payload.output ? payload.output as Record<string, unknown> : step.output,
       error: typeof payload.error === 'object' && payload.error ? payload.error as RunnerError : { code: 'INTERRUPTED', message: 'Runtime interrupted after the provider may have received the operation.', retryability: 'unknown', step_id: step.step_id },
       retryability: 'unknown', side_effect_reference: typeof payload.side_effect_reference === 'string' ? payload.side_effect_reference : undefined }
   }
 
   private async persistExecutionEvidence(run: Run, step: Step, execution: AdapterExecutionResult): Promise<void> {
-    await this.appendEvidence(run, step, 'execution', execution.provider, redact({ success: execution.success, provider: execution.provider, operation: execution.operation,
+    await this.appendEvidence(run, step, 'execution', execution.provider, redact({ success: execution.success, normalized_status: execution.success ? 'success' : 'failure',
+      provider: execution.provider, provider_version: execution.provider_version, operation: execution.operation,
       provider_request_id: execution.provider_request_id, output: execution.output, error: execution.error, side_effect_reference: execution.side_effect_reference }))
   }
   private async persistVerificationEvidence(run: Run, step: Step, verification: VerificationResult): Promise<void> {
