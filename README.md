@@ -119,8 +119,9 @@ Evidence and audit collections are append-oriented through their public reposito
 - **Platform:** Cloudflare Pages
 - **Configuration:** `wrangler.jsonc`
 - **Production branch:** `main`
-- **Status:** deployment performed after the implementation quality gate
-- **Production URL:** populated after successful deployment
+- **Status:** Active — verified 2026-09-10
+- **Production URL:** https://runner-os.pages.dev
+- **Deployment URL:** https://1970f857.runner-os.pages.dev
 
 The in-memory runtime is suitable for proving Phase 0 → Phase 1 behavior but not for production durability. Cloudflare D1 is the recommended next persistence implementation.
 
