@@ -204,6 +204,7 @@ export class GitHubReadAdapter implements ToolAdapter {
   private headers(): Headers {
     const headers = new Headers({
       Accept: 'application/vnd.github+json',
+      'User-Agent': 'runner-os-github-read-adapter',
       'X-GitHub-Api-Version': '2022-11-28',
     })
     if (this.token) headers.set('Authorization', `Bearer ${this.token}`)
