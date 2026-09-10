@@ -10,6 +10,12 @@ Runner OS is a provider-independent execution runtime that turns structured task
 
 The core remains provider-independent. `RunnerStore` has in-memory and Cloudflare D1 implementations; all safety decisions pass through that abstraction.
 
+## URLs
+
+- **Production:** https://runner-os.pages.dev
+- **GitHub:** https://github.com/Sparkmind-obp-off/Runner-os
+- **Health:** https://runner-os.pages.dev/health
+
 ## Completed features
 
 - Strict task, run, step, evidence, approval, recovery, and audit contracts.
